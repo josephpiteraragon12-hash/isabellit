@@ -1,0 +1,68 @@
+name: Compilar Isabelledit (.exe para Windows)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:   # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Descargar FFmpeg
+        shell: pwsh
+        run: |
+          $urls = @(
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          )
+          foreach ($u in $urls) {
+            try { Invoke-WebRequest $u -OutFile ffmpeg.zip -ErrorAction Stop; break }
+            catch { Write-Host "No se pudo descargar $u, probando otra fuente..." }
+          }
+          Expand-Archive ffmpeg.zip ffx
+          New-Item -ItemType Directory -Force ffmpeg | Out-Null
+          foreach ($n in "ffmpeg.exe", "ffprobe.exe") {
+            Copy-Item (Get-ChildItem ffx -Recurse -Filter $n | Select-Object -First 1).FullName ffmpeg\
+          }
+          ffmpeg\ffmpeg.exe -version | Select-Object -First 1
+
+      - name: Prueba de humo (no bloquea la compilación)
+        continue-on-error: true
+        run: python tests/smoke.py
+
+      - name: Compilar con PyInstaller
+        shell: pwsh
+        run: >
+          pyinstaller --noconfirm --windowed --name Isabelledit --icon icon.ico
+          --add-data "icon.ico;." --add-binary "ffmpeg\ffmpeg.exe;ffmpeg"
+          --add-binary "ffmpeg\ffprobe.exe;ffmpeg" --exclude-module tkinter main.py
+
+      - name: Comprimir
+        shell: pwsh
+        run: Compress-Archive -Path dist\Isabelledit\* -DestinationPath Isabelledit-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Isabelledit-Windows
+          path: Isabelledit-Windows.zip
+
+      - name: Publicar en Releases (solo con etiqueta v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Isabelledit-Windows.zip
